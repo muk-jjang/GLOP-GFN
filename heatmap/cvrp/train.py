@@ -15,7 +15,6 @@ from nets.partition_net import Net
 from utils import load_model
 
 EPS = 1e-10
-DEVICE = 'cuda:0'
 LR = 3e-4
 K_SPARSE = {
     1000: 100,
@@ -61,8 +60,6 @@ def train_batch(model, optimizer, n, bs, opts, beta, it):
         coors, demand, capacity = gen_inst(n, DEVICE)# coors: (n+1, 2), tensor  demand: (n+1, ), tensor  capacity: float
         pyg_data = gen_pyg_data(coors, demand, capacity, K_SPARSE[n])# pyg_data: PyGData
         heatmap, logZ = infer_heatmap(model, pyg_data, opts.gfn_loss)# heatmap: (n+1, n+1)
-        print(f'log_Z shape: {logZ.shape}')
-        print(f'log_Z: {logZ}')
         sampler = Sampler(demand, heatmap, capacity, bs, DEVICE)
         routes, log_probs = sampler.gen_subsets(require_prob=True) # routes: (bs, trajectories), log_probs: (bs, trajectories)
         tsp_insts, n_tsps_per_route = trans_tsp(coors, routes)
@@ -75,12 +72,18 @@ def train_batch(model, optimizer, n, bs, opts, beta, it):
             zeta = -beta*objs + log_pb - log_pf
             gfn_loss = torch.pow(zeta - zeta.mean(),2).mean() 
         elif opts.gfn_loss == 'tb':
-            forward_flow = log_probs.to(DEVICE).sum(dim=1) + logZ.expand(log_probs.size(0))
-            backward_flow = calculate_log_pb_uniform(routes) - beta*objs
+            log_pf = log_probs.to(DEVICE).sum(dim=1)
+            log_pb = calculate_log_pb_uniform(routes)
+            forward_flow = log_pf + logZ.expand(log_probs.size(0))
+            backward_flow = log_pb - beta*objs
             gfn_loss = torch.pow(forward_flow - backward_flow, 2).mean()
         
         loss_lst.append(gfn_loss)
         count += 1
+
+        max_obj_index = objs.argmax()
+        min_obj_index = objs.argmin()
+        
         ##################################################
         # wandb
         if USE_WANDB:
@@ -88,6 +91,16 @@ def train_batch(model, optimizer, n, bs, opts, beta, it):
             _train_min_cost += objs.min().item()
             _train_max_cost += objs.max().item()
             _logZ_mean += logZ.item()
+            
+            instance_step = it * opts.batch_size + count - 1
+            wandb.log({'instance':{
+                'max_obj_sample_instance': objs[max_obj_index].item(),
+                'max_obj_sample_logpf': log_pf[max_obj_index].item(),
+                'max_obj_sample_logpb': log_pb[max_obj_index].item(),
+                'min_obj_sample_instance': objs[min_obj_index].item(),
+                'min_obj_sample_logpf': log_pf[min_obj_index].item(),
+                'min_obj_sample_logpb': log_pb[min_obj_index].item(),
+            }}, step=instance_step)
         ##################################################
 
     loss = sum(loss_lst) / opts.batch_size
@@ -101,14 +114,14 @@ def train_batch(model, optimizer, n, bs, opts, beta, it):
     ## wandb logging ##
     if USE_WANDB:
         wandb.log(
-            {
+            {"train":{
                 "train_mean_cost": _train_mean_cost / count,
                 "train_min_cost": _train_min_cost / count,
                 "train_max_cost": _train_max_cost / count,
                 "train_loss": loss.item(),
                 "logZ": _logZ_mean.item() / count,
                 "beta": beta,
-            },
+            }},
             step=it,
         )
     
@@ -126,8 +139,9 @@ def infer_instance(model, inst, opts):
 
 def train_epoch(n, bs, steps_per_epoch, net, optimizer, scheduler, opts, beta_schedule_params, epoch, n_epochs):
     #Beta Schedule
-    beta_min, beta_max, beta_flat_epochs = beta_schedule_params
-    beta = beta_min + (beta_max - beta_min) * min(math.log(epoch) / math.log(n_epochs - beta_flat_epochs), 1.0)
+    # beta_min, beta_max, beta_flat_epochs = beta_schedule_params
+    # beta = beta_min + (beta_max - beta_min) * min(math.log(epoch) / math.log(n_epochs - beta_flat_epochs), 1.0)
+    beta = beta_schedule_params
     for i in tqdm(range(steps_per_epoch)):
         it = (epoch - 1) * steps_per_epoch + i
         train_batch(net, optimizer, n, bs, opts, beta, it)
@@ -192,11 +206,11 @@ def train(n, bs, steps_per_epoch, n_epochs, opts, beta_schedule_params=(50, 500,
             torch.save(checkpoint, f'./pretrained/Partitioner/cvrp/cvrp-{n}-{epoch}-cos.pt')
         
         # wandb
-        wandb.log({
+        wandb.log({"val":{
             'val_avg_obj': avg_obj.item(),
             'val_best_obj': best_obj.item(),
             'epoch': epoch,
-        })
+        }}, step=epoch)
     print('total training duration:', sum_time)
     
 if __name__ == '__main__':
@@ -222,9 +236,13 @@ if __name__ == '__main__':
     parser.add_argument('--depth', type=int, default=12)
     #GFN loss: tb, vargrad
     parser.add_argument('--gfn_loss', type=str, default='tb', help='vargrad or tb')
+    #beta
+    parser.add_argument('--beta', type=float, default=200)
     #logging
     parser.add_argument("--disable_wandb", action="store_true", help="Disable wandb logging")
     parser.add_argument("--run_name", type=str, default="", help="Run name")
+    #multi-gpu
+    parser.add_argument('--gpu', type=int, default=0)
 
     opts = parser.parse_args()
     opts.no_aug = True
@@ -236,12 +254,15 @@ if __name__ == '__main__':
     USE_WANDB = not opts.disable_wandb
 
     run_name = opts.run_name if opts.run_name != "" else f"GFN-{opts.problem_size}"
-    run_name += f"{opts.gfn_loss}-nd{opts.problem_size}-sample_per_instance{opts.width}-sd{opts.seed}"
+    run_name += f"{opts.gfn_loss}-n{opts.problem_size}-sample_per_instance{opts.width}-beta{opts.beta}-sd{opts.seed}"
     if USE_WANDB:
         wandb.init(project=f"glopgfn-cvrp", name=run_name, entity='glop-gfn')
         wandb.config.update(opts)
     #################
 
+    # Device
+    DEVICE = f'cuda:{opts.gpu}' if torch.cuda.is_available() else 'cpu'
+
     torch.manual_seed(opts.seed)
     pp.pprint(vars(opts))
-    train(opts.problem_size, opts.width, opts.steps_per_epoch, opts.n_epochs, opts)
+    train(opts.problem_size, opts.width, opts.steps_per_epoch, opts.n_epochs, opts, beta_schedule_params=opts.beta)
