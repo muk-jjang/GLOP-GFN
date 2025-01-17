@@ -52,6 +52,7 @@ def train_batch(model, optimizer, n, bs, opts, beta, it):
     # wandb
     _train_mean_cost = 0.0
     _train_min_cost = 0.0
+    _train_max_cost = 0.0
     _logZ_mean = torch.tensor(0.0, device=DEVICE)
     sum_loss = torch.tensor(0.0, device=DEVICE)
     count = 0
@@ -104,7 +105,7 @@ def train_batch(model, optimizer, n, bs, opts, beta, it):
                 "train_mean_cost": _train_mean_cost / count,
                 "train_min_cost": _train_min_cost / count,
                 "train_max_cost": _train_max_cost / count,
-                "train_loss": sum_loss.item(),
+                "train_loss": loss.item(),
                 "logZ": _logZ_mean.item() / count,
                 "beta": beta,
             },
@@ -157,7 +158,7 @@ def train(n, bs, steps_per_epoch, n_epochs, opts, beta_schedule_params=(50, 500,
         reviser.set_decode_type(opts.decode_strategy)    
     opts.revisers = revisers
     
-    net = Net(opts.units, 3, K_SPARSE[n], 2, depth=opts.depth).to(DEVICE)
+    net = Net(opts.units, 3, K_SPARSE[n], 2, depth=opts.depth, gfn_loss=opts.gfn_loss).to(DEVICE)
     optimizer = torch.optim.AdamW(net.parameters(), lr=LR)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer, T_max=n_epochs)
     
@@ -171,7 +172,7 @@ def train(n, bs, steps_per_epoch, n_epochs, opts, beta_schedule_params=(50, 500,
         starting_epoch = checkpoint['epoch'] + 1
         
     sum_time = 0
-    best_avg_obj = validation(n, net, opts)
+    best_avg_obj, _ = validation(n, net, opts)
     print('epoch 0', best_avg_obj.item())
     for epoch in range(starting_epoch, n_epochs + 1):
         start = time.time()
@@ -220,7 +221,7 @@ if __name__ == '__main__':
     parser.add_argument('--batch_size', type=int, default=10)
     parser.add_argument('--depth', type=int, default=12)
     #GFN loss: tb, vargrad
-    parser.add_argument('--gfn_loss', type=str, default='vargrad', help='vargrad or tb')
+    parser.add_argument('--gfn_loss', type=str, default='tb', help='vargrad or tb')
     #logging
     parser.add_argument("--disable_wandb", action="store_true", help="Disable wandb logging")
     parser.add_argument("--run_name", type=str, default="", help="Run name")
