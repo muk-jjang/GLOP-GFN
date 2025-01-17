@@ -79,12 +79,20 @@ class ParNet(MLP):
     
 
 class Net(nn.Module):
-    def __init__(self, units, feats, k_sparse, edge_feats=1, depth=12):
+    def __init__(self, units, feats, k_sparse, edge_feats=1, depth=12, gfn_loss='tb', Z_out_dim=1):
         super().__init__()
         self.emb_net = EmbNet(depth=depth, units=units, feats=feats, edge_feats=edge_feats)
         self.par_net_heu = ParNet(units=units, k_sparse=k_sparse)
+
+        # gfn
+        self.gfn_loss = gfn_loss
+        self.Z_net = nn.Sequential(
+            nn.Linear(48, 48),
+            nn.ReLU(),
+            nn.Linear(48, Z_out_dim),
+        ) if gfn_loss == 'tb' else None
         
-    def forward(self, pyg):
+    def forward(self, pyg, return_logZ=True):
         '''
         Args:
             pyg: torch_geometric.data.Data instance with x, edge_index, and edge attr
@@ -94,6 +102,13 @@ class Net(nn.Module):
         x, edge_index, edge_attr = pyg.x, pyg.edge_index, pyg.edge_attr
         emb = self.emb_net(x, edge_index, edge_attr)
         heu = self.par_net_heu(emb)
+
+        # gfn logz
+        if return_logZ:
+            assert self.gfn_loss and self.Z_net is not None
+            logZ = self.Z_net(emb).mean(0)
+            return heu, logZ
+        
         return heu
             
     @staticmethod
