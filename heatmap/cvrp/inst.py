@@ -4,6 +4,8 @@ import numpy as np
 
 def gen_inst(n, device):
     CAPACITIES = {
+        200: 50.,
+        500: 50.,
         1000: 200.,
         2000: 300.,
         5000: 300.,
