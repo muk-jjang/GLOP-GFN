@@ -62,6 +62,7 @@ class Sampler():
         else:
             _, item = dist.max(dim=1)
         return item, log_prob
+
     
     def update_depot_mask(self, vehicle_count, demand_count, actions, capacity_mask, visit_mask):
         depot_mask = torch.ones((self.bs, self.n), device=self.device)
