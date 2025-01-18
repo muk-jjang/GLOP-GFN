@@ -92,7 +92,7 @@ class Net(nn.Module):
             nn.Linear(48, Z_out_dim),
         ) if gfn_loss == 'tb' else None
         
-    def forward(self, pyg, return_logZ=True):
+    def forward(self, pyg, return_logZ=False):
         '''
         Args:
             pyg: torch_geometric.data.Data instance with x, edge_index, and edge attr
