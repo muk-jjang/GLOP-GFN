@@ -73,21 +73,18 @@ def train_batch(model, optimizer, n, bs, opts, beta, it):
             heatmap = infer_heatmap(model, pyg_data, opts.gfn_loss)
         sampler = Sampler(demand, heatmap, capacity, bs, DEVICE)
         routes, log_probs = sampler.gen_subsets(require_prob=True) # routes: (bs, trajectories), log_probs: (bs, trajectories)
-        # print(f'routes shape: {routes.shape}')
-        # print(f'log_probs shape: {log_probs.shape}')
         tsp_insts, n_tsps_per_route = trans_tsp(coors, routes)
-        # print(f'tsp_insts: {tsp_insts}')
-        # print(f'tsp_insts.shape{tsp_insts.shape}')
         objs = eval(tsp_insts, n_tsps_per_route, opts) # (bs, )
         
         ##TODO: vargrad, tb 구성, off-policy buffer
         log_pf = log_probs.to(DEVICE).sum(dim=1)
         log_pb = calculate_log_pb_uniform(routes)
-        costs = objs - objs.mean(0)
         if opts.gfn_loss == 'vargrad':
-            log_Z_est = (-beta*costs + log_pb - log_pf)
-            gfn_loss = torch.pow(log_Z_est - log_Z_est.mean(0), 2).mean(0) 
+            log_Z_est = (-beta*objs + log_pb - log_pf)
+            gfn_loss = torch.pow(log_Z_est - log_Z_est.mean(0), 2).mean(0)
+            # print(f'gfn_loss: vargrad') 
         elif opts.gfn_loss == 'tb':
+            costs = objs - objs.mean(0)
             forward_flow = log_pf + logZ.expand(log_probs.size(0))
             backward_flow = log_pb - beta*costs
             gfn_loss = torch.pow(forward_flow - backward_flow, 2).mean(0)
@@ -150,7 +147,7 @@ def infer_instance(model, inst, opts):
     elif opts.gfn_loss == 'vargrad':
         heatmap = infer_heatmap(model, pyg_data, opts.gfn_loss)
     sampler = Sampler(demand, heatmap, capacity, 1, DEVICE)
-    routes = sampler.gen_subsets(require_prob=False, greedy_mode=True)
+    routes = sampler.gen_subsets(require_prob=False, greedy_mode=False)
     tsp_insts, n_tsps_per_route = trans_tsp(coors, routes)
     obj = eval(tsp_insts, n_tsps_per_route, opts).min()
     return obj
@@ -221,7 +218,7 @@ def train(n, bs, steps_per_epoch, n_epochs, opts, beta_schedule_params=(50, 500,
                 'optimizer_state_dict': optimizer.state_dict(),
                 'scheduler_state_dict': scheduler.state_dict(),
             }
-            torch.save(checkpoint, f'./pretrained/Partitioner/cvrp/cvrp-{n}-{epoch}-cos.pt')
+            torch.save(checkpoint, f'./pretrained/Partitioner/cvrp/{opts.gfn_loss}/beta{opts.beta}/n{n}/cvrp-{n}-{epoch}-cos.pt')
         
         # wandb
         wandb.log({"val":{
@@ -267,12 +264,23 @@ if __name__ == '__main__':
     opts.no_prune = False
     opts.problem_type = 'tsp'
 
+    revision_len_dict ={
+        200: 10,
+        500: 20,
+        1000: 20
+    }
+    #revision-len
+    if opts.problem_size in revision_len_dict:
+        opts.revision_lens = [revision_len_dict[opts.problem_size]]
+    else:
+        opts.revision_lens = [20]
+
     #################
     # wandb setting
     USE_WANDB = not opts.disable_wandb
 
     run_name = opts.run_name if opts.run_name != "" else f"GFN-{opts.problem_size}"
-    run_name += f"{opts.gfn_loss}-n{opts.problem_size}-s{opts.width}-b{opts.beta}-sd{opts.seed}"
+    run_name += f"{opts.gfn_loss}-n{opts.problem_size}-s{opts.width}-b{opts.beta}-sd{opts.seed}-"
     if USE_WANDB:
         wandb.init(project=f"glopgfn-cvrp", name=run_name, entity='glop-gfn')
         wandb.config.update(opts)
